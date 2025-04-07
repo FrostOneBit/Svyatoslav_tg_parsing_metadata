@@ -19,8 +19,8 @@ async def setup_logger(name: str, log_file: str, level: int = logging.INFO) -> l
     # Полный путь к файлу логов
     log_file_path = os.path.join(log_folder, log_file)
 
-    # Формат логов
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    # Формат логов с указанием имени файла, функции и строки
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s - %(funcName)s (line %(lineno)d) - %(message)s')
 
     # Обработчик для записи логов в файл
     file_handler = logging.FileHandler(log_file_path, encoding='utf-8')

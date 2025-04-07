@@ -4,6 +4,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+Telegram_token_api = os.getenv("TELEGRAM_TOKEN_API")
+
+Default_password = os.getenv("DEFAULT_PASSWORD")
+
 DB_user = os.getenv('DB_USER')
 DB_host = os.getenv('DB_HOST')
 DB_name = os.getenv('DB_NAME')
