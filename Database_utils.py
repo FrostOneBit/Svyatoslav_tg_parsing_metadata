@@ -45,6 +45,7 @@ async def create_tables_for_db():
                 url TEXT NOT NULL,
                 _rule_id INTEGER NOT NULL,
                 rule_counter BIGINT NOT NULL,
+                _group_id BIGINT,
                 status BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -72,8 +73,23 @@ async def create_tables_for_db():
             """
             CREATE TABLE IF NOT EXISTS Groups (
                 Id SERIAL PRIMARY KEY,
-                Group_id BIGINT,
+                group_id BIGINT,
                 status BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # -- Telethon -- #
+        # - Сделать в зашифрованом виде - #
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS Telethon (
+                Id SERIAL PRIMARY KEY,
+                hash_api TEXT NOT NULL,
+                hash_id TEXT NOT NULL,
+                status BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -108,6 +124,10 @@ async def check_user_in_db(message):
 
     except Exception as ex:
         logger.error(ex)
+    finally:
+        connect.commit()
+        cursor.close()
+        connect.close()
 
 
 # --- Занесения пароля в базу данных с проверкой --- #
@@ -129,8 +149,11 @@ async def create_default_password_for_admin():
             cursor.execute("INSERT INTO Passwords (Password) VALUES (%s);", (Default_password,))
             logger.info("Пароль успешно добавлен.")
 
+        return True
+
     except Exception as ex:
         logger.error(f"Ошибка при работе с базой данных: {ex}")
+        return False
 
     finally:
         connect.commit()
@@ -180,6 +203,35 @@ async def register_user_in_db(message, message_arg):
             return False
     except Exception as ex:
         logger.error(ex)
+        return False
+    finally:
+        connect.commit()
+        cursor.close()
+        connect.close()
+
+
+# --- Сохранение или обновление данных в БД --- #
+async def save_telethon_data(data):
+    logger = await setup_logger(name="save_telethon_data", log_file="Database_utils.log")
+
+    try:
+        connect, cursor = await create_connection_to_db()
+
+        # Проверяем, существует ли запись с данным hash_id
+        cursor.execute("SELECT * FROM Telethon WHERE hash_id = %s;", (data['hash_id'],))
+        existing_record = cursor.fetchone()  # Получаем первую запись или None
+
+        if existing_record:
+            # Если запись существует, обновляем её
+            cursor.execute("UPDATE Telethon SET hash_api = %s WHERE hash_id = %s;", (data['hash_api'], data['hash_id']))
+        else:
+            # Если записи нет, вставляем новую
+            cursor.execute("INSERT INTO Telethon (hash_id, hash_api) VALUES (%s, %s);",(data['hash_id'], data['hash_api']))
+
+        return True
+
+    except Exception as ex:
+        logger.error(f"Ошибка при сохранении данных: {ex}")
         return False
     finally:
         connect.commit()
