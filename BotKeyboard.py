@@ -14,12 +14,13 @@ async def get_keyboard_general_admin(message) -> ReplyKeyboardMarkup:
         """
         if not await check_user_in_db(message):
             button_0 = KeyboardButton("Проверить сессию")
-            button_1 = KeyboardButton("Обновить сессию")
+            button_1 = KeyboardButton("Обновить данные сессии")
             button_2 = KeyboardButton("Посмотреть пароль")
             button_3 = KeyboardButton("Поменять пароль")
+            button_4 = KeyboardButton("Подключить сессию")
 
             keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-            keyboard.add(button_0, button_1)
+            keyboard.add(button_0, button_1, button_4)
             keyboard.add(button_2, button_3)
 
             return keyboard

@@ -1,6 +1,8 @@
+from cryptography.fernet import Fernet
+
 from Database import create_connection_to_db
 from Logger_utils import setup_logger
-from Config import Default_password
+from Config import Default_password, Encryption_key
 
 
 # --- Создание таблиц для бд --- #
@@ -73,6 +75,7 @@ async def create_tables_for_db():
             """
             CREATE TABLE IF NOT EXISTS Groups (
                 Id SERIAL PRIMARY KEY,
+                title TEXT,
                 group_id BIGINT,
                 status BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -217,22 +220,59 @@ async def save_telethon_data(data):
     try:
         connect, cursor = await create_connection_to_db()
 
-        # Проверяем, существует ли запись с данным hash_id
-        cursor.execute("SELECT * FROM Telethon WHERE hash_id = %s;", (data['hash_id'],))
+        # Получаем первую запись в таблице
+        cursor.execute("SELECT * FROM Telethon LIMIT 1;")
         existing_record = cursor.fetchone()  # Получаем первую запись или None
 
         if existing_record:
-            # Если запись существует, обновляем её
-            cursor.execute("UPDATE Telethon SET hash_api = %s WHERE hash_id = %s;", (data['hash_api'], data['hash_id']))
+            # Если запись существует, обновляем её, используя PRIMARY KEY или id
+            cursor.execute("UPDATE Telethon SET hash_id = %s, hash_api = %s WHERE id = %s;",
+                           (data['hash_id'], data['hash_api'], existing_record[0]))
         else:
-            # Если записи нет, вставляем новую
-            cursor.execute("INSERT INTO Telethon (hash_id, hash_api) VALUES (%s, %s);",(data['hash_id'], data['hash_api']))
+            # Если таблица пуста, вставляем новую запись
+            cursor.execute("INSERT INTO Telethon (hash_id, hash_api) VALUES (%s, %s);",
+                           (data['hash_id'], data['hash_api']))
 
         return True
 
     except Exception as ex:
         logger.error(f"Ошибка при сохранении данных: {ex}")
         return False
+
+    finally:
+        connect.commit()
+        cursor.close()
+        connect.close()
+
+
+# --- Получение hash_id, hash_api --- #
+async def get_hash_id_api():
+    logger = await setup_logger(name="get_hash_id_api", log_file="Database_utils.log")
+
+    try:
+        # Инициализируем объект шифрования с использованием ключа
+        fernet = Fernet(Encryption_key)
+
+        connect, cursor = await create_connection_to_db()
+
+        # Получаем данные из базы
+        cursor.execute("SELECT * FROM Telethon LIMIT 1;")
+        get_hash_id_api = cursor.fetchone()
+
+        if get_hash_id_api:
+            # Извлекаем зашифрованные данные
+            encrypted_hash_id = get_hash_id_api[2]
+            encrypted_hash_api = get_hash_id_api[1]
+
+            # Расшифровываем данные
+            hash_id = fernet.decrypt(encrypted_hash_id.encode()).decode()
+            hash_api = fernet.decrypt(encrypted_hash_api.encode()).decode()
+
+            return hash_id, hash_api
+
+    except Exception as ex:
+        logger.error(f"Ошибка при получении данных: {ex}")
+        return None, None
     finally:
         connect.commit()
         cursor.close()

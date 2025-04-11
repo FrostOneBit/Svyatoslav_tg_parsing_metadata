@@ -7,6 +7,8 @@ load_dotenv()
 Telegram_token_api = os.getenv("TELEGRAM_TOKEN_API")
 Telegram_org_auth = os.getenv("TELEGRAM_ORG_AUTH")
 
+Telethon_session_name = f"Session's/{os.getenv('TELETHON_SESSION_NAME')}"
+
 Default_password = os.getenv("DEFAULT_PASSWORD")
 
 DB_user = os.getenv('DB_USER')
