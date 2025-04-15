@@ -77,7 +77,8 @@ async def create_tables_for_db():
                 Id SERIAL PRIMARY KEY,
                 title TEXT,
                 group_id BIGINT,
-                status BOOLEAN DEFAULT FALSE,
+                status BOOLEAN DEFAULT FALSE, --Подписан или нет
+                type TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -273,6 +274,52 @@ async def get_hash_id_api():
     except Exception as ex:
         logger.error(f"Ошибка при получении данных: {ex}")
         return None, None
+    finally:
+        connect.commit()
+        cursor.close()
+        connect.close()
+
+
+# --- Сохранение группы в бд с проверкой дубликатов и обновлением --- #
+async def save_group_in_db(results):
+    logger = await setup_logger(name="save_group_in_db", log_file="Database_utils.log")
+
+    try:
+        connect, cursor = await create_connection_to_db()
+
+        for result in results:
+            parts = result.split(",")
+            channel_id = parts[0].split(":")[1].strip()
+            channel_name = parts[1].split(":")[1].strip()
+            status = parts[2].split(":")[1].strip()
+            channel_type = parts[3].split(":")[1].strip()
+
+            # Проверяем, существует ли уже запись с таким channel_id
+            cursor.execute("SELECT * FROM Groups WHERE group_id = %s;", (channel_id,))
+            existing_group = cursor.fetchone()
+
+            if existing_group:
+                # Если запись существует, проверяем, изменился ли channel_name или channel_type
+                existing_channel_name = existing_group[0]  # assuming the name is the first column
+                existing_channel_type = existing_group[3]  # assuming type is the fourth column
+
+                # Если channel_name или channel_type изменился, обновляем
+                if existing_channel_name != channel_name or existing_channel_type != channel_type:
+                    cursor.execute("""
+                        UPDATE Groups 
+                        SET title = %s, type = %s
+                        WHERE group_id = %s;
+                    """, (channel_name, channel_type, channel_id))
+            else:
+                # Если записи нет, добавляем новую
+                cursor.execute("""
+                    INSERT INTO Groups (title, group_id, status, type) 
+                    VALUES (%s, %s, %s, %s);
+                """, (channel_name, channel_id, status, channel_type))
+                logger.info(f"Group {channel_id} added to DB.")
+
+    except Exception as ex:
+        logger.error(f"Error during database operation: {ex}")
     finally:
         connect.commit()
         cursor.close()

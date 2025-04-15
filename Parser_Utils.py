@@ -1,108 +1,100 @@
 import asyncio
 
 import telethon
-from telethon import TelegramClient
-
-from BotCore import process_telethon_update_session
+from telethon import TelegramClient, functions
 from Config import Telethon_session_name
 from Logger_utils import setup_logger
+from Database_utils import get_hash_id_api, save_group_in_db
 
-from Database_utils import get_hash_id_api
 
-# --- Здесь будет получение сообщений --- #
+# --- Получение URL сообщений --- #
 async def get_url_messages():
-    # -- После будет подключен RabitMQ -- #
-    logger = await setup_logger(name='get_utl_messages', log_file="Parser_Utils.log")
+
+    # -- Добавить проверку на существование в бд, чтобы не добавлять дубликаты -- #
+
+    return [
+        "https://t.me/test_open_0/2",  # открытый канал
+        "https://t.me/c/2589054501/2",  # закрытый, НЕ подписан
+        "https://t.me/c/2649844635/2"  # закрытый, ПОДПИСАН
+    ]
+
+
+# --- Основная функция обработки URL-каналов --- #
+async def process_channel_urls():
+    """
+    Определение, подписка, вывод
+    """
+    logger = await setup_logger('process_channel_urls', "Parser_Utils.log")
 
     try:
+        api_id, api_hash = await get_hash_id_api()
+        message_urls = await get_url_messages()
 
-        url_storage = []
+        async with TelegramClient(Telethon_session_name, api_id, api_hash) as client:
+            dialogs = await client.get_dialogs()
 
-        url_test_open_0 = "https://t.me/test_open_0/2"
-        url_test_close_0 = "https://t.me/c/2589054501/2"
-        url_test_subs_close_1 = "https://t.me/c/2649844635/2"
+            # Собираем все подписки: {channel_id: title}
+            subscribed_channels = {
+                (int(f"-100{dialog.entity.id}") if isinstance(dialog.entity, (
+                    telethon.tl.types.Channel, telethon.tl.types.Chat)) else dialog.entity.id):
+                    getattr(dialog.entity, 'title', 'Unknown')
+                for dialog in dialogs
+                if hasattr(dialog.entity, 'id')
+            }
 
-        url_storage.append(url_test_open_0)
-        url_storage.append(url_test_close_0)
-        url_storage.append(url_test_subs_close_1)
+            result_logs = []
 
-        return url_storage
-
-    except Exception as ex:
-        logger.error(ex)
-        return None
-
-# --- Проверка на валидность ссылки --- #
-async def identification_url_message():
-    logger = await setup_logger(name='identification_url_messages', log_file="Parser_Utils.log")
-    try:
-
-        hash_id, hash_api = await get_hash_id_api()
-
-        url_storage = await get_url_messages() #Запрашиваем список ссылок
-        for url in url_storage:
-
-            url_split = url.split("/")
-
-            if url_split[3] == "c":
-                channel_id = url_split[4]
-
-                result_validate_close_group_telegram = await validate_close_group_telegram(channel_id, hash_id, hash_api)
-
-            else:
-                channel_name = url_split[3]
-                channel_id = await get_group_id_use_url_message(channel_name, hash_id, hash_api)
-                logger.info(channel_id)
-    except Exception as ex:
-        logger.error(ex)
-
-# --- Получение id группы --- #
-async def get_group_id_use_url_message(channel_name, hash_id, hash_api):
-    logger = await setup_logger(name='get_group_id_use_url_messages', log_file="Parser_Utils.log")
-
-    try:
-        async with TelegramClient(Telethon_session_name, hash_id, hash_api) as client:
-            try:
-                # Получаем объект канала
-                channel = await client.get_entity(channel_name)
-                channel_id = channel.id
-                logger.info(f"ID группы: {channel_id}")
-
-                # Попытка подписки на канал
+            for message_url in message_urls:
                 try:
-                    await client(telethon.functions.channels.JoinChannelRequest(channel))
-                    logger.info(f"Успешная подписка на канал: {channel_name}")
-                except Exception as ex:
-                    logger.error(f"Ошибка при подписке на канал: {ex}")
+                    url_parts = message_url.split("/")
+                    if len(url_parts) < 4:
+                        logger.error(f"Неверная ссылка: {message_url}")
+                        continue
 
-                return channel_id
+                    is_closed = url_parts[3] == "c"
+                    channel_type = "closed" if is_closed else "open"
+                    channel_data = int(url_parts[4]) if is_closed else url_parts[3]
 
-            except Exception as ex:
-                logger.error(f"Ошибка при получении объекта канала: {ex}")
-                return None
+                    if is_closed:
+                        channel_id = int(f"-100{channel_data}")
+                        is_subscribed = channel_id in subscribed_channels
+                        channel_name = subscribed_channels.get(channel_id, "Unknown")
+                    else:
+                        try:
+                            entity = await client.get_entity(channel_data)
+                            channel_id = entity.id
 
-    except Exception as ex:
-        logger.error(f"Ошибка при подключении к клиенту Telethon: {ex}")
-        return None
+                            # Добавляем -100 только к открытым каналам, когда получаем ID
+                            if isinstance(entity, (telethon.tl.types.Channel, telethon.tl.types.Chat)):
+                                channel_id = int(f"-100{abs(channel_id)}")
 
-# --- Проверка на подписку на данный канал --- #
-async def validate_close_group_telegram(channel_id, hash_id, hash_api):
-    logger = await setup_logger(name='validate_close_group_telegram', log_file="Parser_Utils.log")
+                            channel_name = getattr(entity, 'title', None) or getattr(entity, 'username',
+                                                                                     None) or "Unknown"
+                            is_subscribed = channel_id in subscribed_channels
+                        except Exception as ex:
+                            result_logs.append(
+                                f"Channel ID: Unknown, Name: {channel_data}, Status: False (Entity error: {ex}), Type: open"
+                            )
+                            continue
 
-    try:
+                    result_logs.append(
+                        f"Channel ID: {channel_id}, Name: {channel_name}, Status: {'True' if is_subscribed else 'False'}, Type: {channel_type}"
+                    )
 
-        async with TelegramClient(Telethon_session_name, hash_id, hash_api) as client:
-            try:
-                int_close_channel_id = int(f"-100{channel_id}")
-                channel = await client.get_entity(int_close_channel_id)
-                if channel:
-                    logger.info(channel.title)
-                else:
-                    logger.info(f"Not subs for: {int_close_channel_id}")
-            except Exception as ex:
-                logger.error(ex)
+                except Exception as error:
+                    logger.error(f"Ошибка при обработке {message_url}: {error}")
+                    result_logs.append(
+                        f"Channel ID: {channel_data}, Name: Unknown, Status: False, Type: {channel_type}"
+                    )
 
-    except Exception as ex:
-        logger.error(ex)
+            # for log_line in result_logs:
+            #     logger.info(log_line)
+            await save_group_in_db(result_logs)
 
-asyncio.run(identification_url_message())
+    except Exception as error:
+        logger.error(f"Ошибка в процессе обработки ссылок: {error}")
+        return []
+
+
+# --- Запуск --- #
+asyncio.run(process_channel_urls())

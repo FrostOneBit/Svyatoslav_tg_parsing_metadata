@@ -8,7 +8,7 @@ from telethon import TelegramClient
 
 from BotKeyboard import get_keyboard_general_admin
 from Bot_Utils import on_startup
-from Config import Telegram_token_api, Encryption_key
+from Config import Telegram_token_api, Encryption_key, Telethon_session_name
 
 from Logger_utils import setup_logger
 from MessageStorage import MessageCommand, TelethonMessage, MessageKeyboard
@@ -154,14 +154,11 @@ async def process_connect_telethon_session_phone_number(message: types.Message, 
         hash_id, hash_api = await get_hash_id_api()
 
         # Путь к папке "Session's"
-        session_folder = "Session's"
-        os.makedirs(session_folder, exist_ok=True)
 
         # Формируем путь к файлу сессии
-        session_file = os.path.join(session_folder, f"{phone_number.replace('+', '')}.session")
 
         client = TelegramClient(
-            session_file,
+            Telethon_session_name,
             hash_id,
             hash_api,
             system_version="4.16.30-vxCUSTOM",
@@ -204,10 +201,9 @@ async def process_connect_telethon_session_code_number(message: types.Message, s
         phone_code_hash = data['phone_code_hash']
 
         hash_id, hash_api = await get_hash_id_api()
-        session_file = os.path.join("Session's", f"{phone_number.replace('+', '')}.session")
 
         client = TelegramClient(
-            session_file,
+            Telethon_session_name,
             hash_id,
             hash_api,
             system_version="4.16.30-vxCUSTOM",
@@ -228,7 +224,7 @@ async def process_connect_telethon_session_code_number(message: types.Message, s
         logger.error(f"Ошибка при подключении: {ex}")
         await message.answer(TelethonMessage['connect_error'])
         try:
-            os.remove(os.path.join("Session's", f"{phone_number.replace('+', '')}.session"))
+            os.remove(os.path.join(Telethon_session_name))
         except Exception as ex:
             logger.error(ex)
 
