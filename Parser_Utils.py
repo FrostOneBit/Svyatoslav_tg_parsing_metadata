@@ -1,55 +1,51 @@
 import asyncio
+import re
 
 import telethon
 from telethon import TelegramClient, functions
 from Config import Telethon_session_name
 from Logger_utils import setup_logger
-from Database_utils import get_hash_id_api, save_group_in_db
+from Database_utils import get_hash_id_api, save_group_in_db, save_url_message_in_db, get_url_by_rule_1
 
 
 # --- Получение URL сообщений --- #
-async def get_url_messages():
-
+async def get_url_messages_rabbitmq():
     # -- Добавить проверку на существование в бд, чтобы не добавлять дубликаты -- #
+    #  -- Переделка под RabbitMQ для получения ссылок -- #
 
-    return [
-        "https://t.me/test_open_0/2",  # открытый канал
-        "https://t.me/c/2589054501/2",  # закрытый, НЕ подписан
-        "https://t.me/c/2649844635/2"  # закрытый, ПОДПИСАН
+    message_group = [
+        "https://t.me/test_open_0/2",
+        "https://t.me/c/2589054501/2",
+        "https://t.me/c/2649844635/2"
     ]
 
+    return message_group
 
-# --- Основная функция обработки URL-каналов --- #
+
+# --- Основная функция обработки группы по сообщениям--- #
 async def process_channel_urls():
-    """
-    Определение, подписка, вывод
-    """
+
     logger = await setup_logger('process_channel_urls', "Parser_Utils.log")
 
     try:
         api_id, api_hash = await get_hash_id_api()
-        message_urls = await get_url_messages()
+        message_urls = await get_url_messages_rabbitmq()
 
         async with TelegramClient(Telethon_session_name, api_id, api_hash) as client:
             dialogs = await client.get_dialogs()
-
-            # Собираем все подписки: {channel_id: title}
             subscribed_channels = {
-                (int(f"-100{dialog.entity.id}") if isinstance(dialog.entity, (
-                    telethon.tl.types.Channel, telethon.tl.types.Chat)) else dialog.entity.id):
-                    getattr(dialog.entity, 'title', 'Unknown')
+                int(f"-100{dialog.entity.id}"): getattr(dialog.entity, 'title', 'Unknown')
                 for dialog in dialogs
-                if hasattr(dialog.entity, 'id')
+                if isinstance(dialog.entity, (telethon.tl.types.Channel, telethon.tl.types.Chat))
             }
 
-            result_logs = []
+            result = []
 
-            for message_url in message_urls:
+            for url in message_urls:
                 try:
-                    url_parts = message_url.split("/")
+                    url_parts = url.split("/")
                     if len(url_parts) < 4:
-                        logger.error(f"Неверная ссылка: {message_url}")
-                        continue
+                        raise ValueError("Недопустимый формат ссылки")
 
                     is_closed = url_parts[3] == "c"
                     channel_type = "closed" if is_closed else "open"
@@ -57,44 +53,79 @@ async def process_channel_urls():
 
                     if is_closed:
                         channel_id = int(f"-100{channel_data}")
-                        is_subscribed = channel_id in subscribed_channels
                         channel_name = subscribed_channels.get(channel_id, "Unknown")
+                        is_subscribed = channel_id in subscribed_channels
                     else:
                         try:
                             entity = await client.get_entity(channel_data)
-                            channel_id = entity.id
-
-                            # Добавляем -100 только к открытым каналам, когда получаем ID
-                            if isinstance(entity, (telethon.tl.types.Channel, telethon.tl.types.Chat)):
-                                channel_id = int(f"-100{abs(channel_id)}")
-
-                            channel_name = getattr(entity, 'title', None) or getattr(entity, 'username',
-                                                                                     None) or "Unknown"
+                            channel_id = int(f"-100{abs(entity.id)}")
+                            channel_name = getattr(entity, 'title', None) or getattr(entity, 'username', None) or "Unknown"
                             is_subscribed = channel_id in subscribed_channels
                         except Exception as ex:
-                            result_logs.append(
-                                f"Channel ID: Unknown, Name: {channel_data}, Status: False (Entity error: {ex}), Type: open"
-                            )
-                            continue
+                            raise ValueError(f"Ошибка получения entity: {ex}")
 
-                    result_logs.append(
-                        f"Channel ID: {channel_id}, Name: {channel_name}, Status: {'True' if is_subscribed else 'False'}, Type: {channel_type}"
-                    )
+                    result.append({
+                        "message_url": url,
+                        "channel_id": str(channel_id),
+                        "channel_name": channel_name,
+                        "status": str(is_subscribed),
+                        "channel_type": channel_type
+                    })
 
-                except Exception as error:
-                    logger.error(f"Ошибка при обработке {message_url}: {error}")
-                    result_logs.append(
-                        f"Channel ID: {channel_data}, Name: Unknown, Status: False, Type: {channel_type}"
-                    )
+                except Exception as ex:
+                    logger.error(f"Ошибка при обработке {url}: {ex}")
+                    result.append({
+                        "message_url": url,
+                        "channel_id": "Unknown",
+                        "channel_name": "Unknown",
+                        "status": "False",
+                        "channel_type": "unknown"
+                    })
 
-            # for log_line in result_logs:
-            #     logger.info(log_line)
-            await save_group_in_db(result_logs)
+            saved = await save_group_in_db(result)
+            await save_url_message_in_db(saved)
 
-    except Exception as error:
-        logger.error(f"Ошибка в процессе обработки ссылок: {error}")
-        return []
+    except Exception as e:
+        logger.error(f"Глобальная ошибка обработки ссылок: {e}")
 
 
-# --- Запуск --- #
-asyncio.run(process_channel_urls())
+# --- Функция: Правило 1 --- #
+async def parse_url_by_rule_1():
+    logger = await setup_logger('get_url_by_rule_1', "Rules.log")
+
+    try:
+        api_id, api_hash = await get_hash_id_api()
+        urls_message = await get_url_by_rule_1()
+        messages = []
+        async with TelegramClient(Telethon_session_name, api_id, api_hash) as client:
+            for url_message in urls_message:
+                group_id = url_message[0]
+                id = url_message[1]
+                match = re.search(r"/(\d+)$", url_message[2])
+                if not match:
+                    logger.error(f"Не удалось извлечь message_id из ссылки: {url_message[2]}")
+
+                message_id = int(match.group(1))
+
+                try:
+
+                    entity = await client.get_entity(group_id)
+                    message = await client.get_messages(entity, ids=message_id)
+
+                    messages.append({
+                        "group_id": group_id,
+                        "message_id": message_id,
+                        "text": message.text,
+                        "date": message.date,
+                        "sender_id": message.sender_id
+                    })
+
+                except Exception as ex:
+                    logger.error(ex)
+
+            print(messages)
+
+    except Exception as ex:
+        logger.error(ex)
+
+asyncio.run(parse_url_by_rule_1())
