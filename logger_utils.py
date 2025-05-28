@@ -12,7 +12,7 @@ async def setup_logger(name: str, log_file: str, level: int = logging.INFO) -> l
     """
 
     # Создаем папку для логов, если она не существует
-    log_folder = "Files/Logs"
+    log_folder = "Files/logs"
     if not os.path.exists(log_folder):
         os.makedirs(log_folder)
 

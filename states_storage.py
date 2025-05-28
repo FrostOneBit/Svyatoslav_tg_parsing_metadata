@@ -6,3 +6,6 @@ class TelethonStates(StatesGroup):
 class TelethonSessionStates(StatesGroup):
     phone_number = State()
     code_number = State()
+
+class ChangePassword(StatesGroup):
+    password = State()

@@ -1,12 +1,12 @@
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 
-from Database_utils import check_user_in_db
-from Logger_utils import setup_logger
+from database_utils import check_user_in_db
+from logger_utils import setup_logger
 
 
 # --- Клавиатура для админа --- #
 async def get_keyboard_general_admin(message) -> ReplyKeyboardMarkup:
-    logger = await setup_logger(name="keyboard_general_admin", log_file="BotKeyboard.log")
+    logger = await setup_logger(name="keyboard_general_admin", log_file="bot_keyboard.log")
 
     try:
         """
