@@ -34,25 +34,24 @@ async def check_session_file_existence(session_name):
     logger = await setup_logger(name="check_session_file_existence", log_file="folder_utils.log")
 
     try:
-        # Проверяем, существует ли файл сессии
         if not os.path.exists(session_name):
             logger.warning(f"⚠️ Файл сессии НЕ найден: {session_name}")
             return False
 
-        # Получаем необходимые идентификаторы для API из базы данных
         hash_id, hash_api = await get_hash_id_api()
 
-        # Используем async context manager, чтобы TelegramClient автоматически подключался и отключался
-        async with TelegramClient(session_name, hash_id, hash_api) as client:
-            # Если клиент не авторизован, возвращаем False
-            if not await client.is_user_authorized():
-                logger.warning("⚠️ Сессия загружена, но пользователь не авторизован.")
-                return False
+        client = TelegramClient(session_name, hash_id, hash_api)
 
-            # Получаем информацию о пользователе
-            me = await client.get_me()
-            logger.info(f"✅ Сессия активна. Пользователь: @{me.username or me.id}")
+        await client.connect()  # Важно: только connect, не start()
 
+        if not await client.is_user_authorized():
+            logger.warning("⚠️ Сессия загружена, но пользователь не авторизован.")
+            await client.disconnect()
+            return False
+
+        me = await client.get_me()
+        logger.info(f"✅ Сессия активна. Пользователь: @{me.username or me.id}")
+        await client.disconnect()
         return True
 
     except SessionPasswordNeededError:
@@ -61,7 +60,8 @@ async def check_session_file_existence(session_name):
     except Exception as ex:
         logger.error(f"❌ Ошибка при проверке работоспособности сессии: {ex}")
         return False
-
+    finally:
+        client.disconnect()
 
 # --- Копирование файла сессии telegram --- #
 async def copy_telegram_session_file():
