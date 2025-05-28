@@ -1,5 +1,7 @@
 import asyncio
 
+from cryptography.hazmat.primitives.keywrap import aes_key_wrap
+
 from config import Telethon_session_audience, Telethon_session_messages
 from database import create_tables_for_db
 from database_utils import create_default_password_for_admin, save_default_rules, get_admins_from_db, save_urls_message_in_db
@@ -24,10 +26,16 @@ async def on_startup(dispatcher):
         await save_default_rules()
         await create_folder()
 
+
         global background_process_task, background_audience_task
-        # Запускаем два отдельных воркера
-        background_process_task = asyncio.create_task(background_process())  # для get_groups и parse_urls_by_rule
-        # background_audience_task = asyncio.create_task(background_parse_audience_by_group_id())  # для parse_audience_by_group_id
+
+
+        if await check_session_file_existence(Telethon_session_messages):
+            # Запускаем два отдельных воркера
+            background_process_task = asyncio.create_task(background_process())  # для get_groups и parse_urls_by_rule
+            background_audience_task = asyncio.create_task(background_parse_audience_by_group_id())  # для parse_audience_by_group_id
+        else:
+            await alert_admins_about_missing_session_message()
 
     except Exception as ex:
         logger.error(f"[on_startup] Ошибка при инициализации: {ex}")
@@ -40,14 +48,11 @@ async def background_process():
     while True:
         try:
 
-            if await check_session_file_existence(Telethon_session_messages):
-                logger.info("Запуск save_urls_message_in_db")
-                await save_urls_message_in_db()
+            logger.info("Запуск save_urls_message_in_db")
+            await save_urls_message_in_db()
 
-                logger.info("Запуск parse_urls_by_rule()")
-                await parse_urls_by_rule()
-            else:
-                await alert_admins_about_missing_session_message()
+            logger.info("Запуск parse_urls_by_rule()")
+            await parse_urls_by_rule()
 
         except Exception as ex:
             logger.error(f"[background_worker] Ошибка при выполнении одной из задач: {ex}")
@@ -66,9 +71,8 @@ async def background_parse_audience_by_group_id():
             logger.info("Запуск get_groups_by_url()")
             await get_groups_by_url()
 
-            if await check_session_file_existence(Telethon_session_audience):
-                logger.info("Запуск parse_audience_by_group_id() из отдельного воркера")
-                await parse_audience_by_group_id()
+            logger.info("Запуск parse_audience_by_group_id() из отдельного воркера")
+            await parse_audience_by_group_id()
 
         except Exception as ex:
             logger.error(f"[audience_parser_worker] Ошибка при парсинге аудитории: {ex}")

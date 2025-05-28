@@ -42,7 +42,7 @@ async def get_groups_by_url():
 
         api_id, api_hash = await get_hash_id_api()
 
-        async with TelegramClient(Telethon_session_messages, api_id, api_hash) as client:
+        async with TelegramClient(Telethon_session_audience, api_id, api_hash) as client:
             dialogs = await client.get_dialogs()
             subscribed_ids = {int(f"-100{dialog.entity.id}") for dialog in dialogs if isinstance(dialog.entity, Channel)}
 
@@ -58,20 +58,22 @@ async def get_groups_by_url():
                     if is_private:
                         raw_id = int(parts[4])
                         group_id = int(f"-100{raw_id}")
-                        type = "close"
+                        channel_type = "close"
                         peer = PeerChannel(raw_id)
                         status = group_id in subscribed_ids
 
-                        # Получаем название только если подписаны
-                        title = None
+                        # Получаем username только если подписаны
+                        username = None
                         if status:
                             try:
                                 entity = await client.get_entity(peer)
-                                title = entity.title
+                                # Если у закрытого канала не задан username, то entity.username может быть None
+                                username = getattr(entity, 'username', None)
                             except Exception as e:
-                                logger.warning(f"⚠️ Ошибка при получении названия закрытого канала {group_id}: {e}")
+                                logger.warning(f"⚠️ Ошибка при получении username закрытого канала {group_id}: {e}")
 
                     else:
+                        # Из открытой ссылки получаем username напрямую
                         username = parts[3]
                         try:
                             entity = await asyncio.wait_for(client.get_entity(username), timeout=10)
@@ -86,11 +88,13 @@ async def get_groups_by_url():
                             continue
 
                         group_id = int(f"-100{entity.id}")
-                        type = "open"
+                        channel_type = "open"
                         status = True  # Открытый канал всегда доступен
-                        title = entity.title
+                        # Обновляем username из entity, если таковой задан
+                        username = getattr(entity, 'username', username)
 
-                    await save_group_in_db(title, group_id, status, type)
+                    # Передаём username вместо title в функцию сохранения
+                    await save_group_in_db(username, group_id, status, channel_type)
 
                 except Exception as e:
                     logger.error(f"❌ Ошибка при обработке URL '{url}': {e}")
@@ -109,45 +113,53 @@ async def parse_audience_by_group_id():
             groups_storage = await get_group_id_for_parse_audience()
 
             for group_storage in groups_storage:
-                db_id = group_storage[0]
-                group_id = group_storage[1]
-                group_username = group_storage[2]  # ожидаем username без '@'
-
+                db_id, group_id, group_username = group_storage[0], group_storage[1], group_storage[2]
                 if not group_username:
                     logger.error(f"Нет username для группы с id {group_id}, пропускаем...")
                     continue
 
-                entity = None
-                while True:
-                    try:
-                        entity = await client.get_entity(group_username)
-                        break
-                    except FloodWaitError as fw:
-                        logger.warning(f"FloodWait при получении {group_username}: ждём {fw.seconds} сек.")
-                        await asyncio.sleep(fw.seconds)
-                    except Exception as e:
-                        logger.error(f"Не удалось получить информацию о канале {group_username}: {e}")
-                        break  # не пытаемся дальше
+                # Получаем entity для группы
+                try:
+                    entity = await client.get_entity(group_username)
+                except FloodWaitError as fw:
+                    logger.warning(f"FloodWait при получении {group_username}: ждём {fw.seconds} сек.")
+                    await asyncio.sleep(fw.seconds)
+                    continue
+                except Exception as e:
+                    logger.error(f"Не удалось получить информацию о канале {group_username}: {e}")
+                    continue
 
                 if not entity:
                     logger.error(f"Пропускаем группу {group_username} — entity не получен.")
                     continue
 
                 unique_usernames = set()
-                logger.info(f"Парсинг аудитории для: {group_username}")
+                logger.info(f"Начинаем парсинг аудитории для: {group_username}")
+                message_count = 0       # общее кол-во обработанных сообщений
+                commented_count = 0     # сообщений, в которых есть комментарии
 
                 try:
                     async for message in client.iter_messages(entity):
-                        # logger.info(f"Обрабатывается сообщение с ID: {message.id}")  # Добавлено: вывод message_id
-                        if message.replies and message.replies.replies > 0:
-                            try:
-                                async for reply in client.iter_messages(entity, reply_to=message.id, limit=10000):
-                                    if reply.sender:
-                                        username = reply.sender.username or f"id_{reply.sender_id}"
-                                        unique_usernames.add(username)
-                                        logger.debug(f"Найден ответ от {username} на сообщение {message.id}")  # Дополнительная информация
-                            except Exception as e:
-                                logger.warning(f"⚠️ Ошибка получения ответов на сообщение {message.id} в {group_username}: {e}")
+                        message_count += 1
+                        # Если у сообщения нет атрибута replies или комментариев, пропускаем его
+                        if not message.replies or message.replies.replies == 0:
+                            logger.debug(f"Пропускаем сообщение {message.id} без комментариев.")
+                            continue
+
+                        commented_count += 1
+                        # Обработка комментариев с использованием reply_to=message.id
+                        try:
+                            async for reply in client.iter_messages(entity, reply_to=message.id, limit=10000):
+                                if reply.sender:
+                                    username = reply.sender.username or f"id_{reply.sender_id}"
+                                    unique_usernames.add(username)
+                        except Exception as e:
+                            logger.warning(f"⚠️ Ошибка получения комментариев для сообщения {message.id}: {e}")
+
+                        # Периодическое логирование каждых 10 сообщений, у которых есть комментарии
+                        if commented_count % 10 == 0:
+                            logger.info(f"Обработано {commented_count} сообщений с комментариями " +
+                                        f"из общего числа {message_count}. Уникальных пользователей: {len(unique_usernames)}")
                 except FloodWaitError as fw:
                     logger.warning(f"FloodWait при парсинге сообщений {group_username}: ждём {fw.seconds} сек.")
                     await asyncio.sleep(fw.seconds)
@@ -155,7 +167,9 @@ async def parse_audience_by_group_id():
                     logger.error(f"Ошибка при парсинге канала {group_username}: {ex}")
                     continue
 
-                logger.info(f"Завершён парсинг {group_username}. Уникальные пользователи: {len(unique_usernames)}")
+                logger.info(f"Завершён парсинг {group_username}. Всего обработано сообщений: {message_count}, " +
+                            f"сообщений с комментариями: {commented_count}. " +
+                            f"Уникальных пользователей: {len(unique_usernames)}")
 
                 try:
                     data_to_send = {
@@ -164,13 +178,12 @@ async def parse_audience_by_group_id():
                         "group_id": group_id,
                         "usernames": list(unique_usernames)
                     }
-
                     await send_audience_to_rabbitmq(data_to_send)
                     await update_status_audience_by_group_id(db_id)
                 except Exception as ex:
                     logger.error(f"Ошибка при отправке данных о канале {group_username}: {ex}")
 
-            await asyncio.sleep(delay["parse_audience_by_group_id"])
+                await asyncio.sleep(delay["parse_audience_by_group_id"])
 
     except Exception as ex:
         logger.error(f"Ошибка выполнения parse_audience_by_group_id: {ex}")

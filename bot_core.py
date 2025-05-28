@@ -1,9 +1,5 @@
 import os
 import asyncio
-from asyncore import dispatcher
-
-from cryptography.hazmat.primitives.keywrap import aes_key_wrap
-from venv import logger
 
 import bot_utils
 from aiogram import types
@@ -13,9 +9,9 @@ from cryptography.fernet import Fernet
 from telethon import TelegramClient
 
 from bot_keyboard import get_keyboard_general_admin
-from bot_utils import on_startup, background_audience_task, alert_admins_about_missing_session_message
+from bot_utils import on_startup
 from config import Encryption_key, Telethon_session_messages, Telethon_session_audience
-from bot_settings import dp, bot, storage
+from bot_settings import dp
 from folder_utils import copy_telegram_session_file, delete_telegram_session_files, check_session_file_existence
 
 from logger_utils import setup_logger
@@ -295,6 +291,8 @@ async def process_connect_telethon_session_code_number(message: types.Message, s
         await message.answer(TelethonMessage['connect_success'])
 
         await copy_telegram_session_file()
+
+        await client.disconnect()
 
         # -- Включение функций -- #
         await on_startup(dp)
