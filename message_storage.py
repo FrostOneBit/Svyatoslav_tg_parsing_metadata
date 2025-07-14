@@ -3,7 +3,8 @@ MessageCommand = {
     "register_error": f"При регистрации произошла ошибка! Посмотри логи",
     "register_empty": "Привет, укажите пароль после команды /register <PASSWORD>",
     "register_success": "Ты успешно зарегистрировался!",
-    "register_repeat": "Ты уже зарегистрирован"
+    "register_repeat": "Ты уже зарегистрирован",
+    "cancel": "Вы успешно отменили команду"
 }
 
 MessageKeyboard = {

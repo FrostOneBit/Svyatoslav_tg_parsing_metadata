@@ -1,12 +1,15 @@
-import pika
 import re
 import os
 import json
-import requests
 import base64
+import asyncio
+import aio_pika
+import requests
 
+from aio_pika import DeliveryMode
 from logger_utils import setup_logger
 from config import swagger_url_links, swagger_token, swagger_platforms, swagger_headers, RB_username, RB_password, RB_host, RB_virtual_host, RB_port, Rb_queue_name
+from urllib.parse import urlparse, urlunparse
 
 
 # --- Получение ссылок из RabbitMQ --- #
@@ -28,46 +31,40 @@ async def get_urls_message_rabbitmq():
                 response = requests.get(swagger_url_links, headers=swagger_headers, params=query_params)
                 if response.status_code == 200:
                     platform_links = response.json()
-                    message_group.extend(platform_links)  # Добавляем ссылки в общий список
+                    message_group.extend(platform_links)
                 else:
                     logger.error(f"Ошибка получения данных для {social_platform}: {response.status_code}, {response.text}")
             except Exception as request_exception:
                 logger.error(f"Ошибка запроса для {social_platform}: {request_exception}")
 
-            if message_group:
-                logger.info(f"Успешно собрано {len(message_group)} ссылок для платформы {social_platform}")
-            else:
-                logger.warning("Не найдено данных для записи в БД.")
+        if message_group:
+            logger.info(f"Успешно собрано {len(message_group)} ссылок.")
+        else:
+            logger.warning("Не найдено данных для записи в БД.")
 
         # Фильтрация: оставляем только ссылки, похожие на сообщения Telegram
-        # Ожидаемый формат: https://t.me/<channel>/(<message_id>)[?параметры]
         telegram_link_pattern = re.compile(r"^https?://t\.me/(?:c/)?[\w\-_]+/\d+(?:\?.+)?$")
         filtered_links = [link for link in message_group if telegram_link_pattern.match(link)]
-        logger.info(f"После фильтрации осталось {len(filtered_links)} ссылок, похожих на Telegram-сообщения.")
-        return filtered_links
+
+        # Очистка от параметров, таких как '?single'
+        async def clean_telegram_url(url):
+            parsed = urlparse(url)
+            clean_url = urlunparse(parsed._replace(query=""))  # Убираем query-параметры
+            return clean_url
+
+        cleaned_links = [await clean_telegram_url(link) for link in filtered_links]
+        logger.info(f"После очистки осталось {len(cleaned_links)} Telegram-ссылок.")
+        return cleaned_links
 
     except Exception as general_exception:
-        logger.error(f"Ошибка в fetch_social_links: {general_exception}")
+        logger.error(f"Ошибка в get_urls_message_rabbitmq: {general_exception}")
         return []
 
 
 # --- Отправка данных о сообщении в очередь RabbitMQ --- #
 async def send_json_message_to_rabbitmq(message_data):
     logger = await setup_logger(name="send_json_to_rabbitmq", log_file="rabbitmq_utils.log")
-
     try:
-        # Подключение к RabbitMQ
-        credentials = pika.PlainCredentials(RB_username, RB_password)
-        parameters = pika.ConnectionParameters(
-            host=RB_host,
-            port=RB_port,
-            virtual_host=RB_virtual_host,
-            credentials=credentials
-        )
-        connection = pika.BlockingConnection(parameters)
-        channel = connection.channel()
-        channel.queue_declare(queue=Rb_queue_name, durable=True)
-
         # Обработка комментариев
         comments = [
             {
@@ -110,15 +107,30 @@ async def send_json_message_to_rabbitmq(message_data):
             "comments": comments
         }
 
-        # Отправка в очередь
-        channel.basic_publish(
-            exchange='',
-            routing_key=Rb_queue_name,
-            body=json.dumps(formatted_message, ensure_ascii=False),
-            properties=pika.BasicProperties(delivery_mode=2)
-        )
+        # Формирование строки подключения к RabbitMQ
+        # Если в RB_virtual_host используется "/" — его следует экранировать, например, "%2F"
+        connection_string = f"amqp://{RB_username}:{RB_password}@{RB_host}:{RB_port}/{RB_virtual_host}"
+        # Устанавливаем асинхронное соединение с robust-подключением
+        connection = await aio_pika.connect_robust(connection_string)
 
-        # Сохраняем локально (опционально)
+        async with connection:
+            channel = await connection.channel()
+            # Объявляем очередь, чтобы быть уверенными в её наличии
+            await channel.declare_queue(Rb_queue_name, durable=True)
+
+            # Подготовка сообщения
+            message_body = json.dumps(formatted_message, ensure_ascii=False, indent=2).encode()
+            message = aio_pika.Message(
+                body=message_body,
+                delivery_mode=DeliveryMode.PERSISTENT
+            )
+
+            # Публикация сообщения в очередь через default exchange
+            await channel.default_exchange.publish(
+                message, routing_key=Rb_queue_name
+            )
+
+        # Сохраняем сообщение локально (опционально)
         save_folder = "Files/json"
         os.makedirs(save_folder, exist_ok=True)
         raw_url = formatted_message['url'].replace('https://t.me/', '')
@@ -128,7 +140,6 @@ async def send_json_message_to_rabbitmq(message_data):
             json.dump(formatted_message, f, ensure_ascii=False, indent=2)
 
         logger.info(f"Сообщение отправлено в RabbitMQ и сохранено в '{file_path}'.")
-        connection.close()
 
     except Exception as ex:
         logger.error(f"Ошибка при отправке данных в RabbitMQ: {ex}")
@@ -141,10 +152,9 @@ def encode_image_to_base64(path):
         return code
 
 
-# --- Отправка данных о группе в очередь RabbitMQ --- #
+# --- Отправка данных о группе в очередь RabbitMQ (с использованием aio-pika) --- #
 async def send_audience_to_rabbitmq(data):
     logger = await setup_logger(name="send_audience_to_rabbitmq", log_file="rabbitmq_utils.log")
-
     try:
         group_id = data.get("group_id", "unknown")
         save_folder = "Files/json"
@@ -157,27 +167,29 @@ async def send_audience_to_rabbitmq(data):
 
         logger.info(f"✅ Аудитория сохранена в файл: {file_path}")
 
-        # Отправка в RabbitMQ
-        credentials = pika.PlainCredentials(RB_username, RB_password)
-        parameters = pika.ConnectionParameters(
-            host=RB_host,
-            port=RB_port,
-            virtual_host=RB_virtual_host,
-            credentials=credentials
-        )
-        connection = pika.BlockingConnection(parameters)
-        channel = connection.channel()
-        channel.queue_declare(queue=Rb_queue_name, durable=True)
+        # Формирование строки подключения к RabbitMQ
+        connection_string = f"amqp://{RB_username}:{RB_password}@{RB_host}:{RB_port}/{RB_virtual_host}"
 
-        channel.basic_publish(
-            exchange='',
-            routing_key=Rb_queue_name,
-            body=json.dumps(data, ensure_ascii=False),
-            properties=pika.BasicProperties(delivery_mode=2)
-        )
+        # Устанавливаем асинхронное соединение с помощью aio-pika
+        connection = await aio_pika.connect_robust(connection_string)
+        async with connection:
+            channel = await connection.channel()
+            # Объявляем очередь, чтобы гарантировать, что она существует
+            await channel.declare_queue(Rb_queue_name, durable=True)
+
+            # Формирование сообщения
+            message_body = json.dumps(data, ensure_ascii=False).encode()
+            message = aio_pika.Message(
+                body=message_body,
+                delivery_mode=DeliveryMode.PERSISTENT
+            )
+
+            # Публикация сообщения в очередь через default_exchange
+            await channel.default_exchange.publish(
+                message, routing_key=Rb_queue_name
+            )
 
         logger.info(f"📤 Аудитория отправлена в RabbitMQ (group_id={group_id})")
-        connection.close()
 
     except Exception as ex:
         logger.error(f"❌ Ошибка при отправке аудитории в RabbitMQ: {ex}")

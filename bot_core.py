@@ -9,7 +9,7 @@ from cryptography.fernet import Fernet
 from telethon import TelegramClient
 
 from bot_keyboard import get_keyboard_general_admin
-from bot_utils import on_startup
+from bot_utils import on_startup, cancel_background_tasks
 from config import Encryption_key, Telethon_session_messages, Telethon_session_audience
 from bot_settings import dp
 from folder_utils import copy_telegram_session_file, delete_telegram_session_files, check_session_file_existence
@@ -72,6 +72,19 @@ async def command_keyboard(message: types.Message):
         logger.error(ex)
 
 
+# --- Отмена любого состояния --- #
+@dp.message_handler(commands=["cancel"], state="*")
+async def command_cancel(message: types.Message, state: FSMContext):
+    logger = await setup_logger(name="command_cancel", log_file="bot_core.log")
+
+    try:
+
+        await state.reset_state(with_data=True)
+        await message.answer(f"{MessageCommand['cancel']}")
+
+    except Exception as ex:
+        logger.error(ex)
+
 # --- Просмотр пароля --- #
 @dp.message_handler(lambda message: message.text == "Посмотреть пароль")
 async def command_check_password(message: types.Message):
@@ -106,15 +119,15 @@ async def command_check_session(message: types.Message):
     logger = await setup_logger(name="command_check_session", log_file="bot_core.log")
 
     try:
+        if await cancel_background_tasks():
+            if await check_session_file_existence(Telethon_session_messages):
+                await message.answer("Сессия для сообщений активна:")
+                if await check_session_file_existence(Telethon_session_audience):
+                    await message.answer("Сессия для аудитории активна:")
 
-        await cancel_background_tasks()
-
-        if await check_session_file_existence(Telethon_session_messages):
-            await message.answer("Сессия для сообщений активна:")
-            if await check_session_file_existence(Telethon_session_audience):
-                await message.answer("Сессия для аудитории активна:")
-
-        await on_startup(dp)
+                    # await on_startup(dp)
+            else:
+                await message.answer("Сессия не активна воспользуйтесь командами для активации. Порядок выполнения:\n\n1. Обновить данные сессии\n2. Подключить сессию")
 
     except Exception as ex:
         logger.error(ex)
@@ -133,6 +146,24 @@ async def command_update_session(message: types.Message):
 
     except Exception as ex:
         logger.error(ex)
+
+
+# --- Подключение сессии к боту --- #
+@dp.message_handler(lambda message: message.text == "Подключить сессию")
+async def command_connect_telethon_session(message: types.Message):
+    logger = await setup_logger(name="command_connect_telethon_session", log_file="bot_core.log")
+    try:
+
+        await cancel_background_tasks()
+
+        await delete_telegram_session_files()
+
+        # Теперь можно инициировать подключение сессии
+        await message.answer("Введите номер телефона для подключения сессии:")
+        await TelethonSessionStates.phone_number.set()
+
+    except Exception as ex:
+        logger.error(f"Ошибка в команде подключения сессии: {ex}")
 
 
 # --- State ChangePassword --- #
@@ -192,23 +223,6 @@ async def process_telethon_update_session(message: types.Message, state: FSMCont
         logger.error(ex)
     finally:
         await state.finish()
-
-
-@dp.message_handler(lambda message: message.text == "Подключить сессию")
-async def command_connect_telethon_session(message: types.Message):
-    logger = await setup_logger(name="command_connect_telethon_session", log_file="bot_core.log")
-    try:
-
-        await cancel_background_tasks()
-
-        await delete_telegram_session_files()
-
-        # Теперь можно инициировать подключение сессии
-        await message.answer("Введите номер телефона для подключения сессии:")
-        await TelethonSessionStates.phone_number.set()
-
-    except Exception as ex:
-        logger.error(f"Ошибка в команде подключения сессии: {ex}")
 
 
 # --- Ввод номера телефона --- #
@@ -310,27 +324,6 @@ async def process_connect_telethon_session_code_number(message: types.Message, s
 
         # Отключаем сессию после использования
         await client.disconnect()
-
-
-# --- Отключение функций --- #
-async def cancel_background_tasks():
-    logger = await setup_logger(name="cancel_background_tasks", log_file="bot_utils.log")
-
-    if bot_utils.background_process_task is not None and not bot_utils.background_process_task.done():
-        bot_utils.background_process_task.cancel()
-        try:
-            await bot_utils.background_process_task
-        except asyncio.CancelledError:
-            logger.info("Фоновый процесс background_process успешно остановлен.")
-        bot_utils.background_process_task = None
-
-    if bot_utils.background_audience_task is not None and not bot_utils.background_audience_task.done():
-        bot_utils.background_audience_task.cancel()
-        try:
-            await bot_utils.background_audience_task
-        except asyncio.CancelledError:
-            logger.info("Фоновый процесс background_parse_audience_by_group_id успешно остановлен.")
-        bot_utils.background_audience_task = None
 
 
 if __name__ == '__main__':

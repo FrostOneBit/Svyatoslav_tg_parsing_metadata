@@ -41,18 +41,18 @@ async def check_session_file_existence(session_name):
         hash_id, hash_api = await get_hash_id_api()
 
         client = TelegramClient(session_name, hash_id, hash_api)
+        if client:
+            await client.connect()  # Важно: только connect, не start()
 
-        await client.connect()  # Важно: только connect, не start()
+            if not await client.is_user_authorized():
+                logger.warning("⚠️ Сессия загружена, но пользователь не авторизован.")
+                await client.disconnect()
+                return False
 
-        if not await client.is_user_authorized():
-            logger.warning("⚠️ Сессия загружена, но пользователь не авторизован.")
+            me = await client.get_me()
+            logger.info(f"✅ Сессия активна. Пользователь: @{me.username or me.id}")
             await client.disconnect()
-            return False
-
-        me = await client.get_me()
-        logger.info(f"✅ Сессия активна. Пользователь: @{me.username or me.id}")
-        await client.disconnect()
-        return True
+            return True
 
     except SessionPasswordNeededError:
         logger.warning("⚠️ Необходим пароль двухфакторной аутентификации (2FA). Сессия требует повторной авторизации.")

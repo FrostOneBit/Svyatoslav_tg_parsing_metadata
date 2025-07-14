@@ -62,21 +62,28 @@ async def get_groups_by_url():
                         peer = PeerChannel(raw_id)
                         status = group_id in subscribed_ids
 
-                        # Получаем username только если подписаны
                         username = None
                         if status:
                             try:
                                 entity = await client.get_entity(peer)
-                                # Если у закрытого канала не задан username, то entity.username может быть None
                                 username = getattr(entity, 'username', None)
+                            except FloodWaitError as fw:
+                                logger.warning(f"FloodWait (private): Ждем {fw.seconds} сек. для группы {group_id}")
+                                await asyncio.sleep(fw.seconds)
+                                continue
                             except Exception as e:
                                 logger.warning(f"⚠️ Ошибка при получении username закрытого канала {group_id}: {e}")
 
                     else:
-                        # Из открытой ссылки получаем username напрямую
+                        # Для открытых каналов берем username из URL
                         username = parts[3]
                         try:
+                            # Устанавливаем таймаут получения entity
                             entity = await asyncio.wait_for(client.get_entity(username), timeout=10)
+                        except FloodWaitError as fw:
+                            logger.warning(f"FloodWait (open): Ждем {fw.seconds} сек. для URL '{url}'")
+                            await asyncio.sleep(fw.seconds)
+                            continue
                         except (UsernameNotOccupiedError, UsernameInvalidError):
                             logger.warning(f"⛔ Канал по ссылке '{url}' не существует. Пропускаем.")
                             continue
@@ -90,12 +97,15 @@ async def get_groups_by_url():
                         group_id = int(f"-100{entity.id}")
                         channel_type = "open"
                         status = True  # Открытый канал всегда доступен
-                        # Обновляем username из entity, если таковой задан
+                        # Если в entity задан username — обновляем его
                         username = getattr(entity, 'username', username)
 
-                    # Передаём username вместо title в функцию сохранения
                     await save_group_in_db(username, group_id, status, channel_type)
 
+                except FloodWaitError as fw:
+                    logger.warning(f"FloodWait при обработке URL '{url}': Ждем {fw.seconds} сек.")
+                    await asyncio.sleep(fw.seconds)
+                    continue
                 except Exception as e:
                     logger.error(f"❌ Ошибка при обработке URL '{url}': {e}")
 
